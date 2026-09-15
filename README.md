@@ -49,7 +49,6 @@ BetterGamepad\Scripts\UserOption Presets\UserOption Presets for PalWheel\
 | Preset | Riding skill layout |
 |---|---|
 | `UserOption_BetterGamepad_0_All_Skills_on_DPad_PalWheel.sav` | Skill 1 = D-Pad Left, Skill 2 = D-Pad Right, Skill 3 = D-Pad Up |
-
 | `UserOption_BetterGamepad_1_Skill3_on_X_PalWheel.sav` | Skill 3 = Square / X — Face Button Left |
 | `UserOption_BetterGamepad_2_Skill3_on_DPadUp_PalWheel.sav` | Skill 3 = D-Pad Up |
 | `UserOption_BetterGamepad_3_Skill3_on_RT_PalWheel.sav` | Skill 3 = R2 / RT |
