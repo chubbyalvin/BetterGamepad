@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import hashlib, struct, sys
 from pathlib import Path
 
@@ -6,6 +5,7 @@ EXPECTED_SHA256 = "44b6295e70aa37b83d1c42ce1dcf865a7ffadcd300298b0e49a02bad8eb83
 IMAGE_BASE = 0x140000000
 CHECKS = {
     0x14315D510: bytes.fromhex("40 57 48 83 EC"),
+    0x14315D227: bytes.fromhex("75 1C"),
     0x14315F246: bytes.fromhex("74 2B"),
     0x14316C58E: bytes.fromhex("48 8D 05 5B FA FE FF"),
     0x14316C59F: bytes.fromhex("48 8D 05 EA 2B FF FF"),

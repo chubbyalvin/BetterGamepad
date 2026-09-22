@@ -1,6 +1,6 @@
 # BetterGamepad Native Helper
 
-**Version 1.0 — by ChubbyAlvin**
+**Version 1.1 — by ChubbyAlvin**
 
 This folder contains the source and build scripts used to produce `BetterGamepad.dll`.
 

@@ -2,7 +2,7 @@ from pathlib import Path
 import struct
 import sys
 
-MARKER = "BetterGamepad Native Helper | v1.0 | by ChubbyAlvin"
+MARKER = "BetterGamepad Native Helper | v1.1 | by ChubbyAlvin"
 
 
 def align(n, a=4):
@@ -14,7 +14,6 @@ def wstr(s):
 
 
 def block(key, value=b"", value_length=0, value_type=1, children=()):
-    """Build an aligned VERSIONINFO block."""
     out = bytearray(b"\0" * 6)
     out += wstr(key)
     out += b"\0" * (align(len(out), 4) - len(out))
@@ -36,16 +35,16 @@ def string_block(key, value):
 def build_version_info():
     fixed = struct.pack(
         "<13I",
-        0xFEEF04BD,  # VS_FFI_SIGNATURE
-        0x00010000,  # VS_FFI_STRUCVERSION
-        0x00010000,  # FileVersion MS: 1.0
-        0x00000000,  # FileVersion LS
-        0x00010000,  # ProductVersion MS: 1.0
-        0x00000000,  # ProductVersion LS
-        0x0000003F,  # VS_FFI_FILEFLAGSMASK
-        0x00000000,  # flags
-        0x00040004,  # VOS_NT_WINDOWS32
-        0x00000002,  # VFT_DLL
+        0xFEEF04BD,
+        0x00010000,
+        0x00010001,
+        0x00000000,
+        0x00010001,
+        0x00000000,
+        0x0000003F,
+        0x00000000,
+        0x00040004,
+        0x00000002,
         0x00000000,
         0x00000000,
         0x00000000,
@@ -54,12 +53,12 @@ def build_version_info():
     strings = [
         ("CompanyName", "ChubbyAlvin"),
         ("FileDescription", MARKER),
-        ("FileVersion", "1.0.0.0"),
+        ("FileVersion", "1.1.0.0"),
         ("InternalName", "BetterGamepad.dll"),
         ("LegalCopyright", "by ChubbyAlvin"),
         ("OriginalFilename", "BetterGamepad.dll"),
         ("ProductName", "BetterGamepad Native Helper"),
-        ("ProductVersion", "1.0"),
+        ("ProductVersion", "1.1"),
         ("Comments", MARKER),
     ]
     table = block("040904B0", children=[string_block(k, v) for k, v in strings])
@@ -79,11 +78,10 @@ def resource_entry(resource_id, target_offset, is_directory):
 
 
 def build_resources(resource_rva):
-    """Build RT_RCDATA #101 and RT_VERSION #1, language en-US."""
     version = build_version_info()
     marker = (MARKER + "\0").encode("ascii")
 
-    # Directory layout offsets relative to start of resource directory.
+
     root_off = 0
     type_rcdata_off = 32
     type_version_off = 56
@@ -98,24 +96,24 @@ def build_resources(resource_rva):
     total = align(version_off + len(version), 4)
     out = bytearray(total)
 
-    # Root: RT_RCDATA (10), RT_VERSION (16)
+
     out[root_off:root_off+16] = resource_directory(2)
     out[16:24] = resource_entry(10, type_rcdata_off, True)
     out[24:32] = resource_entry(16, type_version_off, True)
 
-    # Type -> resource ID
+
     out[type_rcdata_off:type_rcdata_off+16] = resource_directory(1)
     out[type_rcdata_off+16:type_rcdata_off+24] = resource_entry(101, id_rcdata_off, True)
     out[type_version_off:type_version_off+16] = resource_directory(1)
     out[type_version_off+16:type_version_off+24] = resource_entry(1, id_version_off, True)
 
-    # Resource ID -> language 0x0409 -> data entry
+
     out[id_rcdata_off:id_rcdata_off+16] = resource_directory(1)
     out[id_rcdata_off+16:id_rcdata_off+24] = resource_entry(0x0409, rcdata_entry_off, False)
     out[id_version_off:id_version_off+16] = resource_directory(1)
     out[id_version_off+16:id_version_off+24] = resource_entry(0x0409, version_entry_off, False)
 
-    # IMAGE_RESOURCE_DATA_ENTRY
+
     struct.pack_into("<IIII", out, rcdata_entry_off,
                      resource_rva + marker_off, len(marker), 0, 0)
     struct.pack_into("<IIII", out, version_entry_off,
@@ -155,7 +153,7 @@ def main():
     data = bytearray(src.read_bytes())
     opt, sections = parse_pe(data)
 
-    # Refuse to stack another resource table onto an already resource-bearing DLL.
+
     resource_dir_off = opt + 112 + 2 * 8
     old_resource_rva, old_resource_size = struct.unpack_from("<II", data, resource_dir_off)
     if old_resource_rva or old_resource_size:
@@ -183,14 +181,14 @@ def main():
     data += blob
     data += b"\0" * (rawptr + new_rawsz - len(data))
 
-    # Expand .rdata in-place; no existing RVA or code byte moves.
-    struct.pack_into("<I", data, sh + 8, new_vs)       # VirtualSize
-    struct.pack_into("<I", data, sh + 16, new_rawsz)  # SizeOfRawData
 
-    # Resource data-directory entry.
+    struct.pack_into("<I", data, sh + 8, new_vs)
+    struct.pack_into("<I", data, sh + 16, new_rawsz)
+
+
     struct.pack_into("<II", data, resource_dir_off, resource_rva, len(blob))
 
-    # SizeOfInitializedData grows by the new raw bytes in .rdata.
+
     old_init = struct.unpack_from("<I", data, opt + 8)[0]
     struct.pack_into("<I", data, opt + 8, old_init + (new_rawsz - old_rawsz))
 

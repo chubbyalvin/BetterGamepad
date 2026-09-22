@@ -1,4 +1,3 @@
-
 using u8  = unsigned char;
 using u16 = unsigned short;
 using u32 = unsigned int;
@@ -9,20 +8,22 @@ using Handle = void*;
 using NTSTATUS = long;
 
 static volatile long g_applyState = 0;
-static volatile uptr g_lastController = 0;
 static volatile u8 g_meleeActive = 0;
 static volatile u8 g_aimMeleeActive = 0;
-static volatile u8 g_suppressReloadCoop = 0;
+static volatile u8 g_multiActionMeleeDisabled = 0;
 static volatile u8 g_suppressRidingSkill3 = 0;
 static volatile u8 g_multiRidingSkill3 = 0;
+static volatile u8 g_reloadCoopPhysicalHoldActive = 0;
+static volatile u8 g_ridingSkill1AimBypass = 0;
+static volatile uptr g_luaController = 0;
+static volatile u32 g_luaControllerDigits = 0;
 static uptr g_imageBase = 0;
 static constexpr u32 PAGE_EXECUTE_READWRITE = 0x40;
 
 #if defined(__clang__) || defined(__GNUC__)
 __attribute__((used))
 #endif
-static const char g_betterGamepadBranding[] = "BetterGamepad Native Helper | v1.0 | by ChubbyAlvin";
-
+static const char g_betterGamepadBranding[] = "BetterGamepad Native Helper | v1.1 | by ChubbyAlvin";
 
 static constexpr uptr RVA_RIDING_SKILL3_CALLBACK        = 0x315D510ull;
 static constexpr uptr RVA_RIDING_SKILL3_FLY_GATE        = 0x315D5ABull;
@@ -38,13 +39,12 @@ static constexpr uptr RVA_RELOADCOOP_D1_HOLD             = 0x315BF30ull;
 static constexpr uptr RVA_RELOADCOOP_D0_PRESS            = 0x315C880ull;
 
 static constexpr uptr RVA_IS_RIDING                      = 0x31568B0ull;
+static constexpr uptr RVA_RIDING_SKILL1_AIM_BYPASS_JNE   = 0x315D227ull;
 static constexpr uptr RVA_RIDING_SKILL_SLOT              = 0x3161B10ull;
 static constexpr uptr RVA_WEAPON_USE_PRESS               = 0x315ED10ull;
 static constexpr uptr RVA_WEAPON_USE_RELEASE             = 0x315F850ull;
 static constexpr uptr RVA_GET_PLAYER_OR_MOUNT            = 0x314DB50ull;
 static constexpr uptr RVA_IS_CURRENT_WEAPON_MELEE        = 0x2CAEDD0ull;
-static constexpr uptr RVA_SHOOTER_RELOAD                 = 0x2CB6480ull;
-static constexpr uptr RVA_RELOAD_CONTROLLER_POST         = 0x3149DE0ull;
 
 static constexpr uptr SHOOTER_COMPONENT_OFFSET           = 0xBE8ull;
 static constexpr uptr RVA_CODE_CAVE                      = 0x082C100ull;
@@ -90,6 +90,19 @@ typedef NTSTATUS (*NtFlushInstructionCacheFn)(Handle,void*,usize);
 struct NativeApi{NtProtectVirtualMemoryFn protect;NtFlushInstructionCacheFn flush;};
 static bool get_native_api(NativeApi& api){void* ntdll=find_module("ntdll.dll"); if(!ntdll)return false; api.protect=(NtProtectVirtualMemoryFn)resolve_export(ntdll,"NtProtectVirtualMemory"); api.flush=(NtFlushInstructionCacheFn)resolve_export(ntdll,"NtFlushInstructionCache"); return api.protect&&api.flush;}
 
+static bool native_controller_is_riding(void* controller){
+    if(!controller || !g_imageBase) return false;
+    using RidingCheckFn = bool (*)(void*);
+    return ((RidingCheckFn)(g_imageBase+RVA_IS_RIDING))(controller);
+}
+static void native_arm_reloadcoop_if_on_foot(void* controller){
+    if(native_controller_is_riding(controller)){
+        g_reloadCoopPhysicalHoldActive=0;
+    }else{
+        g_reloadCoopPhysicalHoldActive=1;
+    }
+}
+
 static bool bytes_equal(const u8* p,const u8* q,usize n){for(usize i=0;i<n;++i)if(p[i]!=q[i])return false;return true;}
 static bool all_byte(const u8* p,u8 v,usize n){for(usize i=0;i<n;++i)if(p[i]!=v)return false;return true;}
 static void copy_bytes(u8* d,const u8* s,usize n){for(usize i=0;i<n;++i)d[i]=s[i];}
@@ -105,19 +118,19 @@ struct Writer{
 };
 static void emit_movabs_rax(Writer& w, uptr value){w.e8(0x48);w.e8(0xB8);w.e64(value);}
 
-static usize build_conditional_callback_stub(u8* out,usize cap,uptr stubVA,volatile u8* suppressFlag,uptr originalVA){
+static usize build_hold_callback_stub(u8* out,usize cap,uptr stubVA,uptr originalVA){
     Writer w{out,cap,0,stubVA,true};
-    emit_movabs_rax(w,(uptr)&g_lastController); w.e8(0x48);w.e8(0x89);w.e8(0x08);
-    emit_movabs_rax(w,(uptr)suppressFlag); w.e8(0x80);w.e8(0x38);w.e8(0x00);
-    w.e8(0x75);w.e8(0x0C);
+    w.e8(0x51);
+    w.e8(0x48);w.e8(0x83);w.e8(0xEC);w.e8(0x20);
+    emit_movabs_rax(w,(uptr)&native_arm_reloadcoop_if_on_foot); w.e8(0xFF);w.e8(0xD0);
+    w.e8(0x48);w.e8(0x83);w.e8(0xC4);w.e8(0x20);
+    w.e8(0x59);
     emit_movabs_rax(w,originalVA); w.e8(0xFF);w.e8(0xE0);
-    w.e8(0xC3);
     return w.ok?w.n:0;
 }
 
 static usize build_riding_entry_stub(u8* out,usize cap,uptr stubVA,uptr resumeVA){
     Writer w{out,cap,0,stubVA,true};
-    emit_movabs_rax(w,(uptr)&g_lastController); w.e8(0x48);w.e8(0x89);w.e8(0x08);
     emit_movabs_rax(w,(uptr)&g_suppressRidingSkill3); w.e8(0x80);w.e8(0x38);w.e8(0x00);
     w.e8(0x75);w.e8(0x12);
     w.e8(0x40);w.e8(0x57);
@@ -142,6 +155,21 @@ static bool patch_entry_jump6(NativeApi& api, uptr fromVA, uptr toVA){
     return write_protected(api,(void*)fromVA,p,6);
 }
 
+static bool set_riding_skill1_aim_bypass(bool enable){
+    if(g_applyState!=1 || g_imageBase==0) return false;
+    NativeApi api{nullptr,nullptr}; if(!get_native_api(api)) return false;
+    u8* site=(u8*)(g_imageBase+RVA_RIDING_SKILL1_AIM_BYPASS_JNE);
+    const u8 original[2]={0x75,0x1C};
+    const u8 forced[2]={0xEB,0x1C};
+    const u8* desired=enable?forced:original;
+    const u8* accepted=enable?original:forced;
+    if(bytes_equal(site,desired,2)){g_ridingSkill1AimBypass=enable?1:0;return true;}
+    if(!bytes_equal(site,accepted,2)) return false;
+    if(!write_protected(api,site,desired,2)) return false;
+    g_ridingSkill1AimBypass=enable?1:0;
+    return true;
+}
+
 static bool apply_all(){
     PebLite* peb=get_peb(); if(!peb||!peb->ImageBaseAddress){g_applyState=-1;return false;} uptr base=(uptr)peb->ImageBaseAddress;
     NativeApi api{nullptr,nullptr}; if(!get_native_api(api)){g_applyState=-2;return false;}
@@ -149,6 +177,7 @@ static bool apply_all(){
     u8* rideEntry=(u8*)(base+RVA_RIDING_SKILL3_CALLBACK);
     u8* rideFly=(u8*)(base+RVA_RIDING_SKILL3_FLY_GATE);
     u8* rollFly=(u8*)(base+RVA_ROLLCROUCH_FLY_SKILL3);
+    u8* ridingSkill1AimBypass=(u8*)(base+RVA_RIDING_SKILL1_AIM_BYPASS_JNE);
     u8* d3=(u8*)(base+RVA_RELOADCOOP_D3_RELEASE_LEA); u8* d2=(u8*)(base+RVA_RELOADCOOP_D2_TAP_LEA);
     u8* d1=(u8*)(base+RVA_RELOADCOOP_D1_HOLD_LEA); u8* d0=(u8*)(base+RVA_RELOADCOOP_D0_PRESS_LEA);
     u8* cave=(u8*)(base+RVA_CODE_CAVE);
@@ -156,59 +185,72 @@ static bool apply_all(){
     const u8 expRideEntry[6]={0x40,0x57,0x48,0x83,0xEC,0x20};
     const u8 expRideFly[2]={0x75,0x2B};
     const u8 expRollFly[2]={0x74,0x2B};
+    const u8 expRidingSkill1AimBypass[2]={0x75,0x1C};
     const u8 expD3[7]={0x48,0x8D,0x05,0x5B,0xFA,0xFE,0xFF};
     const u8 expD2[7]={0x48,0x8D,0x05,0xEA,0x2B,0xFF,0xFF};
     const u8 expD1[7]={0x48,0x8D,0x05,0x7B,0xF9,0xFE,0xFF};
     const u8 expD0[7]={0x48,0x8D,0x05,0xBC,0x02,0xFF,0xFF};
 
-    if(!bytes_equal(rideEntry,expRideEntry,6)||!bytes_equal(rideFly,expRideFly,2)||!bytes_equal(rollFly,expRollFly,2)||
+    if(!bytes_equal(rideEntry,expRideEntry,6)||!bytes_equal(rideFly,expRideFly,2)||!bytes_equal(rollFly,expRollFly,2)||!bytes_equal(ridingSkill1AimBypass,expRidingSkill1AimBypass,2)||
        !bytes_equal(d3,expD3,7)||!bytes_equal(d2,expD2,7)||!bytes_equal(d1,expD1,7)||!bytes_equal(d0,expD0,7)||
        !all_byte(cave,0xCC,512)){
         g_applyState=-3;return false;
     }
 
-    g_imageBase=base; g_lastController=0; g_meleeActive=0; g_aimMeleeActive=0;
-    g_suppressReloadCoop=0; g_suppressRidingSkill3=0; g_multiRidingSkill3=0;
+    g_imageBase=base; g_meleeActive=0; g_aimMeleeActive=0;
+    g_suppressRidingSkill3=0; g_multiRidingSkill3=0; g_multiActionMeleeDisabled=0; g_reloadCoopPhysicalHoldActive=0; g_ridingSkill1AimBypass=0; g_luaController=0; g_luaControllerDigits=0;
 
     u8 stubs[512]; usize used=0;
     auto append=[&](usize n){used+=n;};
 
-    uptr d0StubVA=base+RVA_CODE_CAVE+used;
-    usize n=build_conditional_callback_stub(stubs+used,sizeof(stubs)-used,d0StubVA,&g_suppressReloadCoop,base+RVA_RELOADCOOP_D0_PRESS); if(!n){g_applyState=-4;return false;} append(n);
     uptr d1StubVA=base+RVA_CODE_CAVE+used;
-    n=build_conditional_callback_stub(stubs+used,sizeof(stubs)-used,d1StubVA,&g_suppressReloadCoop,base+RVA_RELOADCOOP_D1_HOLD); if(!n){g_applyState=-5;return false;} append(n);
-    uptr d2StubVA=base+RVA_CODE_CAVE+used;
-    n=build_conditional_callback_stub(stubs+used,sizeof(stubs)-used,d2StubVA,&g_suppressReloadCoop,base+RVA_RELOADCOOP_D2_TAP); if(!n){g_applyState=-6;return false;} append(n);
-    uptr d3StubVA=base+RVA_CODE_CAVE+used;
-    n=build_conditional_callback_stub(stubs+used,sizeof(stubs)-used,d3StubVA,&g_suppressReloadCoop,base+RVA_RELOADCOOP_D3_RELEASE); if(!n){g_applyState=-7;return false;} append(n);
+    usize n=build_hold_callback_stub(stubs+used,sizeof(stubs)-used,d1StubVA,base+RVA_RELOADCOOP_D1_HOLD); if(!n){g_applyState=-4;return false;} append(n);
     uptr rideStubVA=base+RVA_CODE_CAVE+used;
-    n=build_riding_entry_stub(stubs+used,sizeof(stubs)-used,rideStubVA,base+RVA_RIDING_SKILL3_CALLBACK+6); if(!n){g_applyState=-8;return false;} append(n);
+    n=build_riding_entry_stub(stubs+used,sizeof(stubs)-used,rideStubVA,base+RVA_RIDING_SKILL3_CALLBACK+6); if(!n){g_applyState=-5;return false;} append(n);
 
-    if(!write_protected(api,cave,stubs,used)){g_applyState=-9;return false;}
-    if(!patch_lea_to(api,base,RVA_RELOADCOOP_D0_PRESS_LEA,d0StubVA)){g_applyState=-10;return false;}
-    if(!patch_lea_to(api,base,RVA_RELOADCOOP_D1_HOLD_LEA,d1StubVA)){g_applyState=-11;return false;}
-    if(!patch_lea_to(api,base,RVA_RELOADCOOP_D2_TAP_LEA,d2StubVA)){g_applyState=-12;return false;}
-    if(!patch_lea_to(api,base,RVA_RELOADCOOP_D3_RELEASE_LEA,d3StubVA)){g_applyState=-13;return false;}
-    if(!patch_entry_jump6(api,base+RVA_RIDING_SKILL3_CALLBACK,rideStubVA)){g_applyState=-14;return false;}
+    if(!write_protected(api,cave,stubs,used)){g_applyState=-6;return false;}
+    if(!patch_lea_to(api,base,RVA_RELOADCOOP_D1_HOLD_LEA,d1StubVA)){g_applyState=-7;return false;}
+    if(!patch_entry_jump6(api,base+RVA_RIDING_SKILL3_CALLBACK,rideStubVA)){g_applyState=-8;return false;}
 
     const u8 patchRideFly[2]={0x90,0x90};
     const u8 patchRollFly[2]={0xEB,0x2B};
-    if(!write_protected(api,rideFly,patchRideFly,2)){g_applyState=-15;return false;}
-    if(!write_protected(api,rollFly,patchRollFly,2)){g_applyState=-16;return false;}
+    if(!write_protected(api,rideFly,patchRideFly,2)){g_applyState=-9;return false;}
+    if(!write_protected(api,rollFly,patchRollFly,2)){g_applyState=-10;return false;}
 
     g_applyState=1; return true;
 }
 
 using ControllerFn = void (*)(void*);
-using RidingFn = bool (*)(void*);
 using SkillFn = bool (*)(void*, int);
 using MeleeFn = bool (*)(void*);
 
-static void* controller_now(){ return (void*)g_lastController; }
-static bool is_riding(void* controller){
-    if(!controller || !g_imageBase) return false;
-    return ((RidingFn)(g_imageBase+RVA_IS_RIDING))(controller);
+static int controller_hex_append(u8 nibble){
+    if(g_luaControllerDigits >= 16){ g_luaController=0; g_luaControllerDigits=0; }
+    g_luaController=(g_luaController<<4) | uptr(nibble & 0x0F);
+    ++g_luaControllerDigits;
+    return 0;
 }
+
+extern "C" __declspec(dllexport) int bettergamepad_controller_reset(void*){ g_luaController=0; g_luaControllerDigits=0; return 0; }
+extern "C" __declspec(dllexport) int bettergamepad_controller_hex_0(void*){ return controller_hex_append(0x0); }
+extern "C" __declspec(dllexport) int bettergamepad_controller_hex_1(void*){ return controller_hex_append(0x1); }
+extern "C" __declspec(dllexport) int bettergamepad_controller_hex_2(void*){ return controller_hex_append(0x2); }
+extern "C" __declspec(dllexport) int bettergamepad_controller_hex_3(void*){ return controller_hex_append(0x3); }
+extern "C" __declspec(dllexport) int bettergamepad_controller_hex_4(void*){ return controller_hex_append(0x4); }
+extern "C" __declspec(dllexport) int bettergamepad_controller_hex_5(void*){ return controller_hex_append(0x5); }
+extern "C" __declspec(dllexport) int bettergamepad_controller_hex_6(void*){ return controller_hex_append(0x6); }
+extern "C" __declspec(dllexport) int bettergamepad_controller_hex_7(void*){ return controller_hex_append(0x7); }
+extern "C" __declspec(dllexport) int bettergamepad_controller_hex_8(void*){ return controller_hex_append(0x8); }
+extern "C" __declspec(dllexport) int bettergamepad_controller_hex_9(void*){ return controller_hex_append(0x9); }
+extern "C" __declspec(dllexport) int bettergamepad_controller_hex_a(void*){ return controller_hex_append(0xA); }
+extern "C" __declspec(dllexport) int bettergamepad_controller_hex_b(void*){ return controller_hex_append(0xB); }
+extern "C" __declspec(dllexport) int bettergamepad_controller_hex_c(void*){ return controller_hex_append(0xC); }
+extern "C" __declspec(dllexport) int bettergamepad_controller_hex_d(void*){ return controller_hex_append(0xD); }
+extern "C" __declspec(dllexport) int bettergamepad_controller_hex_e(void*){ return controller_hex_append(0xE); }
+extern "C" __declspec(dllexport) int bettergamepad_controller_hex_f(void*){ return controller_hex_append(0xF); }
+
+static void* controller_now(){ return g_luaControllerDigits==16 ? (void*)g_luaController : nullptr; }
+static bool is_riding(void* controller){ return native_controller_is_riding(controller); }
 static void* shooter_component_proven(void* controller){
     if(!controller || !g_imageBase) return nullptr;
     void* player=((void*(*)(void*))(g_imageBase+RVA_GET_PLAYER_OR_MOUNT))(controller);
@@ -229,18 +271,18 @@ extern "C" __declspec(dllexport) int bettergamepad_apply(void*){
     if(g_applyState==0) apply_all();
     return 0;
 }
-extern "C" __declspec(dllexport) int bettergamepad_suppress_reloadcoop_on(void*){g_suppressReloadCoop=1;return 0;}
-extern "C" __declspec(dllexport) int bettergamepad_suppress_reloadcoop_off(void*){g_suppressReloadCoop=0;return 0;}
+extern "C" __declspec(dllexport) int bettergamepad_riding_skill1_aim_on(void*){ set_riding_skill1_aim_bypass(true); return 0; }
+extern "C" __declspec(dllexport) int bettergamepad_riding_skill1_aim_off(void*){ set_riding_skill1_aim_bypass(false); return 0; }
+extern "C" __declspec(dllexport) int bettergamepad_suppress_reloadcoop_on(void*){return 0;}
+extern "C" __declspec(dllexport) int bettergamepad_suppress_reloadcoop_off(void*){g_reloadCoopPhysicalHoldActive=0;return 0;}
 extern "C" __declspec(dllexport) int bettergamepad_suppress_ridingskill3_on(void*){
-    // Vanilla Riding Skill 3 remains suppressed while BetterGamepad is active.
-    // This call also grants the multi-action key ownership of deliberate Skill 3.
+
     g_suppressRidingSkill3=1;
     g_multiRidingSkill3=1;
     return 0;
 }
 extern "C" __declspec(dllexport) int bettergamepad_multi_ridingskill3_off(void*){
-    // Disable only Skill 3 on the multi-action key. Keep vanilla suppression enabled
-    // so Roll/Crouch/Descend cannot accidentally trigger Riding Skill 3.
+
     g_multiRidingSkill3=0;
     return 0;
 }
@@ -258,26 +300,12 @@ extern "C" __declspec(dllexport) int bettergamepad_tap_context(void*){
         return 0;
     }
     if(current_weapon_is_melee(controller)){
-        g_meleeActive=1;
-        ((ControllerFn)(g_imageBase+RVA_WEAPON_USE_PRESS))(controller);
-    }else{
-        stock_reload_semantic(controller);
-    }
-    return 0;
-}
-
-extern "C" __declspec(dllexport) int bettergamepad_tap_partner_priority(void*){
-    if(g_applyState!=1 || g_imageBase==0) return 0;
-    void* controller=controller_now(); if(!controller) return 0;
-    if(is_riding(controller)){
-        if(g_multiRidingSkill3){
-            bool fired=((SkillFn)(g_imageBase+RVA_RIDING_SKILL_SLOT))(controller,2);
-            if(!fired) stock_reload_semantic(controller);
-        }else{
-            stock_reload_semantic(controller);
+        if(!g_multiActionMeleeDisabled){
+            g_meleeActive=1;
+            ((ControllerFn)(g_imageBase+RVA_WEAPON_USE_PRESS))(controller);
         }
     }else{
-        ((ControllerFn)(g_imageBase+RVA_RELOADCOOP_D1_HOLD))(controller);
+        stock_reload_semantic(controller);
     }
     return 0;
 }
@@ -285,6 +313,27 @@ extern "C" __declspec(dllexport) int bettergamepad_tap_partner_priority(void*){
 extern "C" __declspec(dllexport) int bettergamepad_partner_skill(void*){
     if(g_applyState!=1 || g_imageBase==0) return 0;
     void* controller=controller_now(); if(!controller) return 0;
+    native_arm_reloadcoop_if_on_foot(controller);
+    ((ControllerFn)(g_imageBase+RVA_RELOADCOOP_D1_HOLD))(controller);
+    return 0;
+}
+
+extern "C" __declspec(dllexport) int bettergamepad_partner_skill_release(void*){
+    if(g_applyState!=1 || g_imageBase==0) return 0;
+    void* controller=controller_now(); if(!controller) return 0;
+    ((ControllerFn)(g_imageBase+RVA_RELOADCOOP_D3_RELEASE))(controller);
+    return 0;
+}
+
+extern "C" __declspec(dllexport) int bettergamepad_partner_skill_arm_clear(void*){
+    g_reloadCoopPhysicalHoldActive=0;
+    return 0;
+}
+
+extern "C" __declspec(dllexport) int bettergamepad_partner_skill_if_physical_hold(void*){
+    if(g_applyState!=1 || g_imageBase==0 || !g_reloadCoopPhysicalHoldActive) return 0;
+    void* controller=controller_now(); if(!controller) return 0;
+    g_reloadCoopPhysicalHoldActive=0;
     ((ControllerFn)(g_imageBase+RVA_RELOADCOOP_D1_HOLD))(controller);
     return 0;
 }
@@ -300,7 +349,7 @@ extern "C" __declspec(dllexport) int bettergamepad_aim_multi_press(void*){
     if(g_applyState!=1 || g_imageBase==0 || g_aimMeleeActive) return 0;
     void* controller=controller_now(); if(!controller) return 0;
     if(is_riding(controller)) return 0;
-    if(current_weapon_is_melee(controller)){
+    if(!g_multiActionMeleeDisabled && current_weapon_is_melee(controller)){
         g_aimMeleeActive=1;
         ((ControllerFn)(g_imageBase+RVA_WEAPON_USE_PRESS))(controller);
     }
@@ -312,15 +361,25 @@ extern "C" __declspec(dllexport) int bettergamepad_aim_multi_release(void*){
     if(g_aimMeleeActive){
         g_aimMeleeActive=0;
         ((ControllerFn)(g_imageBase+RVA_WEAPON_USE_RELEASE))(controller);
-    }else{
+    }else if(!g_multiActionMeleeDisabled || !current_weapon_is_melee(controller)){
         stock_reload_semantic(controller);
     }
+    return 0;
+}
+
+extern "C" __declspec(dllexport) int bettergamepad_disable_multi_action_melee(void*){
+    g_multiActionMeleeDisabled=1;
+    g_meleeActive=0;
+    g_aimMeleeActive=0;
     return 0;
 }
 
 extern "C" __declspec(dllexport) int bettergamepad_finish_melee(void*){
     if(g_applyState!=1 || g_imageBase==0 || g_meleeActive==0) return 0;
     void* controller=controller_now(); g_meleeActive=0;
-    if(controller) ((ControllerFn)(g_imageBase+RVA_WEAPON_USE_RELEASE))(controller);
+    if(controller){
+        ((ControllerFn)(g_imageBase+RVA_WEAPON_USE_RELEASE))(controller);
+
+    }
     return 0;
 }

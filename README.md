@@ -1,12 +1,14 @@
 # BetterGamepad
 
-**BetterGamepad** improves Palworld's controller controls with a context-sensitive multi-action button, configurable Riding Skill 3 routing, and a fix for the flying-mount Skill 3 conflict.
+**BetterGamepad** improves Palworld's controller controls with a configurable context-sensitive multi-action button, improved riding-skill handling, and a fix for the flying-mount Skill 3 conflict.
 
 ## Features
 
-- **Context-sensitive Face Button Left** — Square on PlayStation / X on Xbox handles the appropriate action depending on context, including ranged reload and melee use.
-- **Hold Face Button Left for Partner Skill** — default hold time is 350 ms.
+- **Configurable context-sensitive MultiAction button** — defaults to Square on PlayStation / X on Xbox and handles the appropriate action depending on context, including ranged reload and melee use.
+- **Configurable MultiAction features** — Reload, melee, and Coop / Partner Skill handling can be enabled or disabled independently in `config.lua`.
+- **Hold MultiAction for Partner Skill** — default hold time is 350 ms.
 - **Partner Skill Arming** — hold the Partner Skill button before summoning a Pal to arm its Partner Skill. When the Pal appears, the Partner Skill activates immediately.
+- **Riding Skill 1 while aiming** — when Riding Skill 1 is bound to a different button from WeaponUse / Fire, it remains usable while aiming and its real skill name stays visible. If both actions share the same button, BetterGamepad leaves Palworld's vanilla contextual behavior unchanged.
 - **Riding Skill 3 routing** — BetterGamepad reads Palworld's hidden `RidingSkill3_GamePad` binding and uses the button assigned to it.
 - **Flying-mount conflict fix** — Roll / Crouch / Descend no longer accidentally triggers Riding Skill 3.
 - Supports both **Main** and **Secondary** controller bindings stored in `UserOption.sav`.
@@ -118,12 +120,20 @@ Default Partner Skill behavior is configured in:
 BetterGamepad\Scripts\config.lua
 ```
 
-Defaults:
+Defaults include:
 
 ```lua
+MultiActionButton = "Gamepad_FaceButton_Left"
+EnableReload = true
+EnableMeleeOnMultiAction = true
+EnableCoop = true
+EnableRidingSkill1WhileAiming = true
 PartnerSkillTrigger = "Hold"
 PartnerSkillHoldMs = 350
+PartnerSkillArmTimeout = 0
 ```
+
+See the comments in `config.lua` for the behavior of each setting.
 
 ## Requirements
 
@@ -147,7 +157,7 @@ See [`Native/README.md`](Native/README.md) for details about building the native
 The shipped DLL identifies itself as:
 
 ```text
-BetterGamepad Native Helper | v1.0 | by ChubbyAlvin
+BetterGamepad Native Helper | v1.1 | by ChubbyAlvin
 ```
 
 The `Native/` folder contains the files and rebuild scripts used to produce the BetterGamepad native helper DLL.
